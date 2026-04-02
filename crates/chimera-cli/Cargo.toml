@@ -1,0 +1,22 @@
+[package]
+name = "chimera-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "chimera"
+path = "src/main.rs"
+
+[dependencies]
+chimera-core.workspace = true
+chimera-providers.workspace = true
+chimera-tools.workspace = true
+tokio.workspace = true
+clap.workspace = true
+colored.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

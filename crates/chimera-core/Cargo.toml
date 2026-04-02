@@ -1,0 +1,18 @@
+[package]
+name = "chimera-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+chimera-providers.workspace = true
+chimera-tools.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,60 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/chimera-core",
+    "crates/chimera-providers",
+    "crates/chimera-tools",
+    "crates/chimera-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Cody Mitchell"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# HTTP & networking
+reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest-eventsource = "0.6"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+colored = "3"
+
+# Logging & tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+glob = "0.3"
+regex = "1"
+async-trait = "0.1"
+tokio-stream = "0.1"
+
+# Workspace crates
+chimera-core = { path = "crates/chimera-core" }
+chimera-providers = { path = "crates/chimera-providers" }
+chimera-tools = { path = "crates/chimera-tools" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
