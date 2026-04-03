@@ -95,13 +95,14 @@ impl Agent {
                 tools: if tool_definitions.is_empty() {
                     None
                 } else {
-                    Some(
-                        tool_definitions
-                            .iter()
-                            .cloned()
-                            .map(|v| serde_json::from_value(v).unwrap())
-                            .collect(),
-                    )
+                    let defs: Result<Vec<_>, _> = tool_definitions
+                        .iter()
+                        .cloned()
+                        .map(serde_json::from_value)
+                        .collect();
+                    Some(defs.map_err(|e| {
+                        anyhow::anyhow!("Failed to serialize tool definitions: {e}")
+                    })?)
                 },
                 temperature: self.config.temperature,
                 max_tokens: self.config.max_tokens,
@@ -144,7 +145,15 @@ impl Agent {
             let response = match response {
                 Some(r) => r,
                 None => {
-                    on_event(AgentEvent::Error("No response received from model".into()));
+                    let err_msg = if response_text.is_empty() {
+                        "No response received from model (stream closed unexpectedly)".to_string()
+                    } else {
+                        format!(
+                            "Stream ended without completion. Partial text received: {}...",
+                            &response_text[..response_text.len().min(100)]
+                        )
+                    };
+                    on_event(AgentEvent::Error(err_msg));
                     break;
                 }
             };

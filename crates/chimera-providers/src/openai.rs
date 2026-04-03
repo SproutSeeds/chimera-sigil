@@ -40,7 +40,7 @@ impl Provider for OpenAiProvider {
 
         let response = self
             .client
-            .post(&self.endpoint())
+            .post(self.endpoint())
             .bearer_auth(&self.config.api_key)
             .json(&req)
             .send()
@@ -65,7 +65,7 @@ impl Provider for OpenAiProvider {
 
         let response = self
             .client
-            .post(&self.endpoint())
+            .post(self.endpoint())
             .bearer_auth(&self.config.api_key)
             .json(&req)
             .send()

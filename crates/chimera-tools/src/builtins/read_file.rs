@@ -35,3 +35,56 @@ pub fn run(input: ReadFileInput) -> anyhow::Result<String> {
 
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_file_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "line one\nline two\nline three\n").unwrap();
+
+        let input = ReadFileInput {
+            file_path: path.display().to_string(),
+            offset: None,
+            limit: None,
+        };
+
+        let result = run(input).unwrap();
+        assert!(result.contains("line one"));
+        assert!(result.contains("line three"));
+        assert!(result.contains("1\t")); // line numbers
+    }
+
+    #[test]
+    fn test_read_file_with_offset_and_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "a\nb\nc\nd\ne\n").unwrap();
+
+        let input = ReadFileInput {
+            file_path: path.display().to_string(),
+            offset: Some(2),
+            limit: Some(2),
+        };
+
+        let result = run(input).unwrap();
+        assert!(result.contains("b"));
+        assert!(result.contains("c"));
+        assert!(!result.contains("\ta\n")); // line 1 excluded
+    }
+
+    #[test]
+    fn test_read_nonexistent_file() {
+        let input = ReadFileInput {
+            file_path: "/tmp/chimera_nonexistent_file_test_12345.txt".into(),
+            offset: None,
+            limit: None,
+        };
+
+        let result = run(input);
+        assert!(result.is_err());
+    }
+}

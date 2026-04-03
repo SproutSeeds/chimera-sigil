@@ -228,3 +228,78 @@ fn builtin_tool_specs() -> Vec<ToolSpec> {
         },
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_registry_has_all_builtins() {
+        let registry = ToolRegistry::with_builtins();
+        let names: Vec<&str> = registry.specs().iter().map(|s| s.name).collect();
+
+        assert!(names.contains(&"bash"));
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"write_file"));
+        assert!(names.contains(&"edit_file"));
+        assert!(names.contains(&"glob_search"));
+        assert!(names.contains(&"grep_search"));
+        assert!(names.contains(&"list_dir"));
+        assert_eq!(names.len(), 7);
+    }
+
+    #[test]
+    fn test_registry_get() {
+        let registry = ToolRegistry::with_builtins();
+
+        let bash = registry.get("bash").unwrap();
+        assert_eq!(bash.name, "bash");
+        assert_eq!(bash.permission, PermissionLevel::Execute);
+
+        let read = registry.get("read_file").unwrap();
+        assert_eq!(read.permission, PermissionLevel::ReadOnly);
+
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_tool_definitions_are_valid_json() {
+        let registry = ToolRegistry::with_builtins();
+        let defs = registry.definitions();
+
+        for def in &defs {
+            assert_eq!(def["type"], "function");
+            assert!(def["function"]["name"].is_string());
+            assert!(def["function"]["description"].is_string());
+            assert!(def["function"]["parameters"].is_object());
+
+            // Each should have "type": "object" in parameters
+            assert_eq!(def["function"]["parameters"]["type"], "object");
+
+            // Each should have "required" array
+            assert!(def["function"]["parameters"]["required"].is_array());
+        }
+    }
+
+    #[test]
+    fn test_tool_definitions_deserialize_to_tool_definition() {
+        // Verify the definitions can round-trip through ToolDefinition
+        use chimera_providers::types::ToolDefinition;
+
+        let registry = ToolRegistry::with_builtins();
+        for def in registry.definitions() {
+            let result: Result<ToolDefinition, _> = serde_json::from_value(def.clone());
+            assert!(
+                result.is_ok(),
+                "Failed to deserialize tool definition: {:?}",
+                def
+            );
+        }
+    }
+
+    #[test]
+    fn test_permission_ordering() {
+        assert!(PermissionLevel::ReadOnly < PermissionLevel::WorkspaceWrite);
+        assert!(PermissionLevel::WorkspaceWrite < PermissionLevel::Execute);
+    }
+}

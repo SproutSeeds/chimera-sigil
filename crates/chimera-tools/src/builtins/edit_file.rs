@@ -33,3 +33,59 @@ pub fn run(input: EditFileInput) -> anyhow::Result<String> {
 
     Ok(format!("Edited {} (replaced 1 occurrence)", input.file_path))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_edit_file_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edit.txt");
+        fs::write(&path, "hello world\n").unwrap();
+
+        let input = EditFileInput {
+            file_path: path.display().to_string(),
+            old_string: "hello".into(),
+            new_string: "goodbye".into(),
+        };
+
+        let result = run(input).unwrap();
+        assert!(result.contains("replaced 1 occurrence"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "goodbye world\n");
+    }
+
+    #[test]
+    fn test_edit_file_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edit.txt");
+        fs::write(&path, "hello world\n").unwrap();
+
+        let input = EditFileInput {
+            file_path: path.display().to_string(),
+            old_string: "xyz_not_here".into(),
+            new_string: "replaced".into(),
+        };
+
+        let result = run(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_edit_file_duplicate_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dup.txt");
+        fs::write(&path, "aaa\naaa\n").unwrap();
+
+        let input = EditFileInput {
+            file_path: path.display().to_string(),
+            old_string: "aaa".into(),
+            new_string: "bbb".into(),
+        };
+
+        let result = run(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("2 times"));
+    }
+}

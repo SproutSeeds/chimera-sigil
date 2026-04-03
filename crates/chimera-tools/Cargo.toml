@@ -13,5 +13,9 @@ glob.workspace = true
 regex.workspace = true
 tokio = { workspace = true, features = ["process"] }
 
+[dev-dependencies]
+tempfile = "3"
+chimera-providers.workspace = true
+
 [lints]
 workspace = true

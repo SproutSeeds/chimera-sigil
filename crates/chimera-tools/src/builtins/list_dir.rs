@@ -44,3 +44,47 @@ pub fn run(input: ListDirInput) -> anyhow::Result<String> {
 
     Ok(entries.join("\n"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_list_dir_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "").unwrap();
+        fs::write(dir.path().join("b.txt"), "").unwrap();
+        fs::create_dir(dir.path().join("subdir")).unwrap();
+
+        let input = ListDirInput {
+            path: dir.path().display().to_string(),
+        };
+
+        let result = run(input).unwrap();
+        assert!(result.contains("a.txt"));
+        assert!(result.contains("b.txt"));
+        assert!(result.contains("subdir/"));
+    }
+
+    #[test]
+    fn test_list_dir_empty() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let input = ListDirInput {
+            path: dir.path().display().to_string(),
+        };
+
+        let result = run(input).unwrap();
+        assert!(result.contains("is empty"));
+    }
+
+    #[test]
+    fn test_list_dir_nonexistent() {
+        let input = ListDirInput {
+            path: "/tmp/chimera_nonexistent_dir_12345".into(),
+        };
+
+        let result = run(input);
+        assert!(result.is_err());
+    }
+}
