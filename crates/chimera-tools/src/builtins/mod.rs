@@ -5,3 +5,4 @@ pub mod edit_file;
 pub mod glob_search;
 pub mod grep_search;
 pub mod list_dir;
+pub mod structured_output;

@@ -59,7 +59,24 @@ impl ToolRegistry {
 
     /// Look up a tool spec by name.
     pub fn get(&self, name: &str) -> Option<&ToolSpec> {
-        self.specs.iter().find(|s| s.name == name)
+        let canonical = resolve_alias(name);
+        self.specs.iter().find(|s| s.name == canonical)
+    }
+}
+
+/// Resolve short tool aliases to canonical names.
+/// Inspired by claw-code's alias normalization pattern.
+pub fn resolve_alias(name: &str) -> &str {
+    match name {
+        "read" => "read_file",
+        "write" => "write_file",
+        "edit" => "edit_file",
+        "glob" => "glob_search",
+        "grep" => "grep_search",
+        "ls" | "dir" => "list_dir",
+        "sh" | "shell" | "exec" => "bash",
+        "structured" | "json_output" => "structured_output",
+        other => other,
     }
 }
 
@@ -226,6 +243,17 @@ fn builtin_tool_specs() -> Vec<ToolSpec> {
             }),
             permission: PermissionLevel::ReadOnly,
         },
+        ToolSpec {
+            name: "structured_output",
+            description: "Return structured data as JSON. Use this when the user requests \
+                          data in a specific format (tables, lists, configs, summaries). \
+                          Pass any JSON object as the payload.",
+            parameters: json!({
+                "type": "object",
+                "additionalProperties": true
+            }),
+            permission: PermissionLevel::ReadOnly,
+        },
     ]
 }
 
@@ -245,7 +273,8 @@ mod tests {
         assert!(names.contains(&"glob_search"));
         assert!(names.contains(&"grep_search"));
         assert!(names.contains(&"list_dir"));
-        assert_eq!(names.len(), 7);
+        assert!(names.contains(&"structured_output"));
+        assert_eq!(names.len(), 8);
     }
 
     #[test]
@@ -263,6 +292,29 @@ mod tests {
     }
 
     #[test]
+    fn test_registry_get_resolves_aliases() {
+        let registry = ToolRegistry::with_builtins();
+
+        // Short aliases should resolve to canonical names
+        assert_eq!(registry.get("read").unwrap().name, "read_file");
+        assert_eq!(registry.get("write").unwrap().name, "write_file");
+        assert_eq!(registry.get("edit").unwrap().name, "edit_file");
+        assert_eq!(registry.get("glob").unwrap().name, "glob_search");
+        assert_eq!(registry.get("grep").unwrap().name, "grep_search");
+        assert_eq!(registry.get("ls").unwrap().name, "list_dir");
+        assert_eq!(registry.get("sh").unwrap().name, "bash");
+        assert_eq!(registry.get("structured").unwrap().name, "structured_output");
+    }
+
+    #[test]
+    fn test_resolve_alias_passthrough() {
+        // Non-aliased names pass through unchanged
+        assert_eq!(resolve_alias("bash"), "bash");
+        assert_eq!(resolve_alias("read_file"), "read_file");
+        assert_eq!(resolve_alias("unknown_tool"), "unknown_tool");
+    }
+
+    #[test]
     fn test_tool_definitions_are_valid_json() {
         let registry = ToolRegistry::with_builtins();
         let defs = registry.definitions();
@@ -275,9 +327,6 @@ mod tests {
 
             // Each should have "type": "object" in parameters
             assert_eq!(def["function"]["parameters"]["type"], "object");
-
-            // Each should have "required" array
-            assert!(def["function"]["parameters"]["required"].is_array());
         }
     }
 

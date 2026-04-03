@@ -1,17 +1,19 @@
 use crate::builtins;
+use crate::registry::resolve_alias;
 use serde_json::Value;
 use tracing::{debug, warn};
 
 /// Execute a tool by name with the given JSON arguments.
-/// Returns the tool output as a string.
+/// Resolves aliases (e.g., "read" → "read_file") before dispatch.
 pub async fn execute_tool(name: &str, arguments: &str) -> anyhow::Result<String> {
+    let canonical = resolve_alias(name);
     let input: Value = serde_json::from_str(arguments).map_err(|e| {
-        anyhow::anyhow!("Invalid tool arguments for '{name}': {e}")
+        anyhow::anyhow!("Invalid tool arguments for '{canonical}': {e}")
     })?;
 
-    debug!("Executing tool '{name}'");
+    debug!("Executing tool '{canonical}' (requested as '{name}')");
 
-    match name {
+    match canonical {
         "bash" => {
             let params: builtins::bash::BashInput = serde_json::from_value(input)?;
             builtins::bash::run(params).await
@@ -40,9 +42,10 @@ pub async fn execute_tool(name: &str, arguments: &str) -> anyhow::Result<String>
             let params: builtins::list_dir::ListDirInput = serde_json::from_value(input)?;
             builtins::list_dir::run(params)
         }
+        "structured_output" => builtins::structured_output::run(input),
         _ => {
-            warn!("Unknown tool: {name}");
-            Ok(format!("Error: unknown tool '{name}'"))
+            warn!("Unknown tool: {canonical}");
+            Ok(format!("Error: unknown tool '{canonical}'"))
         }
     }
 }
