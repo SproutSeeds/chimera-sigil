@@ -19,7 +19,7 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 
 # HTTP & networking
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 reqwest-eventsource = "0.6"
 
 # Serialization
@@ -47,9 +47,9 @@ async-trait = "0.1"
 tokio-stream = "0.1"
 
 # Workspace crates
-chimera-core = { path = "crates/chimera-core" }
-chimera-providers = { path = "crates/chimera-providers" }
-chimera-tools = { path = "crates/chimera-tools" }
+chimera-sigil-core = { path = "crates/chimera-core" }
+chimera-sigil-providers = { path = "crates/chimera-providers" }
+chimera-sigil-tools = { path = "crates/chimera-tools" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

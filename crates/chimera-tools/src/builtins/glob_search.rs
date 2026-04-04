@@ -14,8 +14,8 @@ pub fn run(input: GlobSearchInput) -> anyhow::Result<String> {
         format!("{base}/{}", input.pattern)
     };
 
-    let entries = glob::glob(&full_pattern)
-        .map_err(|e| anyhow::anyhow!("Invalid glob pattern: {e}"))?;
+    let entries =
+        glob::glob(&full_pattern).map_err(|e| anyhow::anyhow!("Invalid glob pattern: {e}"))?;
 
     let mut paths: Vec<String> = Vec::new();
     for entry in entries {

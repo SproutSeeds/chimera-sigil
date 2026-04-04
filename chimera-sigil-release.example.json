@@ -1,0 +1,8 @@
+{
+  "windowsHost": "YOUR_WINDOWS_SSH_ALIAS_OR_IP",
+  "windowsUser": "YOUR_WINDOWS_USERNAME",
+  "windowsRoot": "C:\\Users\\Public\\chimera-sigil-release",
+  "wslDistro": "Ubuntu",
+  "sshIdentityFile": "/Users/yourname/.ssh/id_ed25519",
+  "sshPort": 22
+}

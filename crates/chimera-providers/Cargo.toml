@@ -1,5 +1,5 @@
 [package]
-name = "chimera-providers"
+name = "chimera-sigil-providers"
 version.workspace = true
 edition.workspace = true
 

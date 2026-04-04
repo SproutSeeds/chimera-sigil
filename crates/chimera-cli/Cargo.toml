@@ -1,5 +1,5 @@
 [package]
-name = "chimera-cli"
+name = "chimera-sigil-cli"
 version.workspace = true
 edition.workspace = true
 
@@ -8,10 +8,11 @@ name = "chimera"
 path = "src/main.rs"
 
 [dependencies]
-chimera-core.workspace = true
-chimera-providers.workspace = true
-chimera-tools.workspace = true
+chimera-sigil-core.workspace = true
+chimera-sigil-providers.workspace = true
+chimera-sigil-tools.workspace = true
 tokio.workspace = true
+serde_json.workspace = true
 clap.workspace = true
 colored.workspace = true
 tracing.workspace = true

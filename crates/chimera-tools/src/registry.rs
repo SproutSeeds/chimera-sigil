@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Permission level required to execute a tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -303,7 +303,10 @@ mod tests {
         assert_eq!(registry.get("grep").unwrap().name, "grep_search");
         assert_eq!(registry.get("ls").unwrap().name, "list_dir");
         assert_eq!(registry.get("sh").unwrap().name, "bash");
-        assert_eq!(registry.get("structured").unwrap().name, "structured_output");
+        assert_eq!(
+            registry.get("structured").unwrap().name,
+            "structured_output"
+        );
     }
 
     #[test]
@@ -333,7 +336,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_deserialize_to_tool_definition() {
         // Verify the definitions can round-trip through ToolDefinition
-        use chimera_providers::types::ToolDefinition;
+        use chimera_sigil_providers::types::ToolDefinition;
 
         let registry = ToolRegistry::with_builtins();
         for def in registry.definitions() {

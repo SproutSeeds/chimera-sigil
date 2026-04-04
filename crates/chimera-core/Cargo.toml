@@ -1,11 +1,11 @@
 [package]
-name = "chimera-core"
+name = "chimera-sigil-core"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-chimera-providers.workspace = true
-chimera-tools.workspace = true
+chimera-sigil-providers.workspace = true
+chimera-sigil-tools.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -15,6 +15,7 @@ uuid.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 tempfile = "3"
 
 [lints]

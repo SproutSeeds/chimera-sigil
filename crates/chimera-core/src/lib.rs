@@ -1,7 +1,7 @@
 pub mod agent;
-pub mod session;
 pub mod config;
+pub mod session;
 
-pub use agent::Agent;
+pub use agent::{Agent, ExitReason, TurnOutcome};
+pub use config::{ApprovalMode, Config};
 pub use session::Session;
-pub use config::Config;

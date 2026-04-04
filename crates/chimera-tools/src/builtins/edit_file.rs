@@ -31,7 +31,10 @@ pub fn run(input: EditFileInput) -> anyhow::Result<String> {
     let new_content = content.replacen(&input.old_string, &input.new_string, 1);
     fs::write(&input.file_path, &new_content)?;
 
-    Ok(format!("Edited {} (replaced 1 occurrence)", input.file_path))
+    Ok(format!(
+        "Edited {} (replaced 1 occurrence)",
+        input.file_path
+    ))
 }
 
 #[cfg(test)]

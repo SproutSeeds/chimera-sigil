@@ -1,8 +1,11 @@
-pub mod provider;
-pub mod types;
+pub mod anthropic;
+pub mod collab;
+pub mod fallback;
 pub mod grok;
 pub mod openai;
+pub mod provider;
 pub mod stream;
+pub mod types;
 
 pub use provider::{Provider, ProviderConfig, ProviderKind};
 pub use types::*;
@@ -32,7 +35,12 @@ pub fn resolve_model(model: &str) -> (&str, ProviderKind) {
 
         // Default: try to detect from model name prefix
         s if s.starts_with("grok") => (s, ProviderKind::Grok),
-        s if s.starts_with("gpt") || s.starts_with("o1") || s.starts_with("o3") || s.starts_with("o4") || s.starts_with("codex") => {
+        s if s.starts_with("gpt")
+            || s.starts_with("o1")
+            || s.starts_with("o3")
+            || s.starts_with("o4")
+            || s.starts_with("codex") =>
+        {
             (s, ProviderKind::OpenAi)
         }
         s if s.starts_with("claude") => (s, ProviderKind::Anthropic),
@@ -49,12 +57,7 @@ pub fn create_provider(model: &str) -> anyhow::Result<(Box<dyn Provider>, String
     let provider: Box<dyn Provider> = match kind {
         ProviderKind::Grok => Box::new(grok::GrokProvider::new(config)),
         ProviderKind::OpenAi => Box::new(openai::OpenAiProvider::new(config)),
-        ProviderKind::Anthropic => {
-            anyhow::bail!(
-                "Anthropic provider uses a different wire format (Messages API). \
-                 Coming soon — for now use Grok or OpenAI."
-            );
-        }
+        ProviderKind::Anthropic => Box::new(anthropic::AnthropicProvider::new(config)),
         ProviderKind::Ollama => {
             // Ollama uses OpenAI-compatible format
             let config = ProviderConfig {
@@ -69,6 +72,89 @@ pub fn create_provider(model: &str) -> anyhow::Result<(Box<dyn Provider>, String
     Ok((provider, resolved_model.to_string()))
 }
 
+/// Create a fallback provider chain from a comma-separated list of models.
+/// The first model is primary; the rest are fallbacks tried in order.
+/// Returns the provider and the primary model name.
+pub fn create_fallback_provider(models: &str) -> anyhow::Result<(Box<dyn Provider>, String)> {
+    let model_list: Vec<&str> = models.split(',').map(|s| s.trim()).collect();
+
+    if model_list.len() < 2 {
+        return create_provider(model_list[0]);
+    }
+
+    let mut providers: Vec<Box<dyn Provider>> = Vec::new();
+    let mut primary_model = String::new();
+
+    for (i, model) in model_list.iter().enumerate() {
+        match create_provider(model) {
+            Ok((provider, resolved)) => {
+                if i == 0 {
+                    primary_model = resolved;
+                }
+                providers.push(provider);
+            }
+            Err(e) => {
+                if i == 0 {
+                    return Err(e); // Primary provider must succeed
+                }
+                tracing::warn!("Fallback provider '{model}' unavailable: {e}");
+            }
+        }
+    }
+
+    Ok((
+        Box::new(fallback::FallbackProvider::new(providers)),
+        primary_model,
+    ))
+}
+
+/// Wrap a primary provider with collaborating advisor models.
+/// Collaborators do not replace the primary model; they contribute short
+/// parallel perspectives that are merged into the primary model's context.
+pub fn create_collaborative_provider(
+    primary: Box<dyn Provider>,
+    primary_model: String,
+    collaborators: &str,
+) -> anyhow::Result<(Box<dyn Provider>, Vec<String>)> {
+    let model_list: Vec<&str> = collaborators
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let mut collaborator_providers = Vec::new();
+    let mut collaborator_models = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for model in model_list {
+        match create_provider(model) {
+            Ok((provider, resolved)) => {
+                if resolved == primary_model || !seen.insert(resolved.clone()) {
+                    continue;
+                }
+                collaborator_models.push(resolved.clone());
+                collaborator_providers.push((resolved, provider));
+            }
+            Err(e) => {
+                tracing::warn!("Collaborator model '{model}' unavailable: {e}");
+            }
+        }
+    }
+
+    if collaborator_providers.is_empty() {
+        anyhow::bail!("No collaborator models were available");
+    }
+
+    Ok((
+        Box::new(collab::CollaborativeProvider::new(
+            primary,
+            primary_model,
+            collaborator_providers,
+        )),
+        collaborator_models,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,8 +163,14 @@ mod tests {
     fn test_resolve_grok_aliases() {
         assert_eq!(resolve_model("grok"), ("grok-3", ProviderKind::Grok));
         assert_eq!(resolve_model("grok-3"), ("grok-3", ProviderKind::Grok));
-        assert_eq!(resolve_model("grok-mini"), ("grok-3-mini", ProviderKind::Grok));
-        assert_eq!(resolve_model("grok-3-fast"), ("grok-3-fast", ProviderKind::Grok));
+        assert_eq!(
+            resolve_model("grok-mini"),
+            ("grok-3-mini", ProviderKind::Grok)
+        );
+        assert_eq!(
+            resolve_model("grok-3-fast"),
+            ("grok-3-fast", ProviderKind::Grok)
+        );
     }
 
     #[test]
@@ -91,15 +183,30 @@ mod tests {
 
     #[test]
     fn test_resolve_anthropic_aliases() {
-        assert_eq!(resolve_model("opus"), ("claude-opus-4-6", ProviderKind::Anthropic));
-        assert_eq!(resolve_model("sonnet"), ("claude-sonnet-4-6", ProviderKind::Anthropic));
-        assert_eq!(resolve_model("haiku"), ("claude-haiku-4-5-20251001", ProviderKind::Anthropic));
+        assert_eq!(
+            resolve_model("opus"),
+            ("claude-opus-4-6", ProviderKind::Anthropic)
+        );
+        assert_eq!(
+            resolve_model("sonnet"),
+            ("claude-sonnet-4-6", ProviderKind::Anthropic)
+        );
+        assert_eq!(
+            resolve_model("haiku"),
+            ("claude-haiku-4-5-20251001", ProviderKind::Anthropic)
+        );
     }
 
     #[test]
     fn test_resolve_ollama_local() {
-        assert_eq!(resolve_model("llama3.2:latest"), ("llama3.2:latest", ProviderKind::Ollama));
-        assert_eq!(resolve_model("mistral/7b"), ("mistral/7b", ProviderKind::Ollama));
+        assert_eq!(
+            resolve_model("llama3.2:latest"),
+            ("llama3.2:latest", ProviderKind::Ollama)
+        );
+        assert_eq!(
+            resolve_model("mistral/7b"),
+            ("mistral/7b", ProviderKind::Ollama)
+        );
     }
 
     #[test]

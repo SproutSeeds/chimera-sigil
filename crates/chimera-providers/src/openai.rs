@@ -49,9 +49,7 @@ impl Provider for OpenAiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            let _ = tx.send(StreamEvent::Error(format!(
-                "API error {status}: {body}"
-            )));
+            let _ = tx.send(StreamEvent::Error(format!("API error {status}: {body}")));
             anyhow::bail!("API error {status}: {body}");
         }
 

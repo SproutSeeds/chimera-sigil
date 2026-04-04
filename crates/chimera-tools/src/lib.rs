@@ -1,6 +1,6 @@
-pub mod registry;
-pub mod dispatch;
 pub mod builtins;
+pub mod dispatch;
+pub mod registry;
 
-pub use registry::{ToolRegistry, ToolSpec, PermissionLevel, resolve_alias};
 pub use dispatch::execute_tool;
+pub use registry::{PermissionLevel, ToolRegistry, ToolSpec, resolve_alias};

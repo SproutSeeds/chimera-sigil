@@ -2,6 +2,17 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
+/// Noninteractive approval behavior for tool execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalMode {
+    /// Prompt before workspace writes or command execution.
+    Prompt,
+    /// Auto-approve workspace writes, but deny arbitrary command execution.
+    Approve,
+    /// Auto-approve all tool executions.
+    Full,
+}
+
 /// Agent configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -15,8 +26,8 @@ pub struct Config {
     pub max_tokens: Option<u32>,
     /// System prompt override. If None, uses the default.
     pub system_prompt: Option<String>,
-    /// Whether to auto-approve tool executions (dangerous mode).
-    pub auto_approve: bool,
+    /// How tool approvals are handled.
+    pub approval_mode: ApprovalMode,
 }
 
 impl Default for Config {
@@ -27,14 +38,38 @@ impl Default for Config {
             temperature: None,
             max_tokens: None,
             system_prompt: None,
-            auto_approve: false,
+            approval_mode: ApprovalMode::Prompt,
         }
     }
 }
 
 impl Config {
+    /// Get the context window size for the configured model.
+    pub fn context_window(&self) -> usize {
+        context_window_for_model(&self.model)
+    }
+}
+
+/// Default context window sizes per model family.
+pub fn context_window_for_model(model: &str) -> usize {
+    match model {
+        // Grok
+        m if m.starts_with("grok") => 131_072,
+        // OpenAI
+        "gpt-4o" | "gpt-4o-mini" => 128_000,
+        "o3" | "o4-mini" => 200_000,
+        m if m.starts_with("gpt") => 128_000,
+        // Anthropic
+        m if m.starts_with("claude") => 200_000,
+        // Ollama / local — conservative default
+        _ => 32_768,
+    }
+}
+
+impl Config {
     /// Build the system prompt as sections. Includes discovered instruction
-    /// files from the directory tree (CLAUDE.md, AGENTS.md, CHIMERA.md).
+    /// files from the directory tree (CLAUDE.md, AGENTS.md, CHIMERA_SIGIL.md,
+    /// CHIMERA_HARNESS.md, CHIMERA.md).
     ///
     /// Inspired by claw-code's recursive instruction discovery pattern:
     /// walk from cwd to filesystem root, collect instruction files,
@@ -51,7 +86,7 @@ impl Config {
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
 
         let mut sections = vec![format!(
-            r#"You are Chimera, a multi-model AI agent orchestrator running in the user's terminal.
+            r#"You are Chimera Sigil, a multi-model AI agent harness running in the user's terminal.
 You help with software engineering tasks by reading, writing, and editing code, running commands, and searching codebases.
 
 # Environment
@@ -82,11 +117,7 @@ Use them to accomplish the user's requests. Prefer using tools over asking the u
         if !instructions.is_empty() {
             sections.push("\n# Project Instructions\nThe following instruction files were found in the project hierarchy:\n".into());
             for file in &instructions {
-                sections.push(format!(
-                    "## {}\n{}\n",
-                    file.path.display(),
-                    file.content
-                ));
+                sections.push(format!("## {}\n{}\n", file.path.display(), file.content));
             }
         }
 
@@ -111,6 +142,8 @@ const MAX_TOTAL_INSTRUCTION_CHARS: usize = 12000;
 const INSTRUCTION_FILE_NAMES: &[&str] = &[
     "CLAUDE.md",
     "AGENTS.md",
+    "CHIMERA_SIGIL.md",
+    "CHIMERA_HARNESS.md",
     "CHIMERA.md",
     "CLAUDE.local.md",
 ];
@@ -190,7 +223,7 @@ mod tests {
     fn test_default_system_prompt_contains_key_sections() {
         let config = Config::default();
         let prompt = config.system_prompt();
-        assert!(prompt.contains("Chimera"));
+        assert!(prompt.contains("Chimera Sigil"));
         assert!(prompt.contains("# Environment"));
         assert!(prompt.contains("# Tools"));
         assert!(prompt.contains("# Guidelines"));
@@ -207,9 +240,19 @@ mod tests {
     }
 
     #[test]
+    fn test_default_approval_mode_is_prompt() {
+        let config = Config::default();
+        assert_eq!(config.approval_mode, ApprovalMode::Prompt);
+    }
+
+    #[test]
     fn test_discover_instruction_files_from_temp_dir() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("CLAUDE.md"), "# Project\nDo things right.\n").unwrap();
+        std::fs::write(
+            dir.path().join("CLAUDE.md"),
+            "# Project\nDo things right.\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "# Agents\nBe helpful.\n").unwrap();
 
         let files = discover_instruction_files(dir.path());
@@ -253,5 +296,20 @@ mod tests {
 
         let files = discover_instruction_files(dir.path());
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_context_window_for_models() {
+        assert_eq!(context_window_for_model("grok-3"), 131_072);
+        assert_eq!(context_window_for_model("gpt-4o"), 128_000);
+        assert_eq!(context_window_for_model("claude-sonnet-4-6"), 200_000);
+        assert_eq!(context_window_for_model("o3"), 200_000);
+        assert_eq!(context_window_for_model("llama3.2:latest"), 32_768);
+    }
+
+    #[test]
+    fn test_config_context_window() {
+        let config = Config::default();
+        assert_eq!(config.context_window(), 131_072); // grok-3 default
     }
 }

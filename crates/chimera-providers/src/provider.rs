@@ -34,18 +34,9 @@ impl ProviderConfig {
     /// Load provider config from environment variables.
     pub fn from_env(kind: ProviderKind) -> anyhow::Result<Self> {
         let (base_url, env_key) = match kind {
-            ProviderKind::Grok => (
-                "https://api.x.ai/v1",
-                "XAI_API_KEY",
-            ),
-            ProviderKind::OpenAi => (
-                "https://api.openai.com/v1",
-                "OPENAI_API_KEY",
-            ),
-            ProviderKind::Anthropic => (
-                "https://api.anthropic.com/v1",
-                "ANTHROPIC_API_KEY",
-            ),
+            ProviderKind::Grok => ("https://api.x.ai/v1", "XAI_API_KEY"),
+            ProviderKind::OpenAi => ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+            ProviderKind::Anthropic => ("https://api.anthropic.com/v1", "ANTHROPIC_API_KEY"),
             ProviderKind::Ollama => {
                 return Ok(Self {
                     base_url: std::env::var("OLLAMA_BASE_URL")

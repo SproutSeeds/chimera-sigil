@@ -1,4 +1,5 @@
 use crate::types::*;
+use futures::StreamExt;
 use reqwest::Response;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -14,29 +15,27 @@ pub async fn parse_sse_stream(
     let mut usage = None;
     let mut finish_reason = None;
 
-    let body = response.text().await?;
-
-    for line in body.lines() {
-        let line = line.trim();
+    for_each_sse_line(response, |raw_line| {
+        let line = raw_line.trim();
 
         if line.is_empty() || line.starts_with(':') {
-            continue;
+            return Ok(());
         }
 
-        let data = match line.strip_prefix("data: ") {
+        let data = match line.strip_prefix("data:") {
             Some(d) => d.trim(),
-            None => continue,
+            None => return Ok(()),
         };
 
         if data == "[DONE]" {
-            break;
+            return Ok(());
         }
 
         let chunk: StreamChunk = match serde_json::from_str(data) {
             Ok(c) => c,
             Err(e) => {
                 debug!("Failed to parse SSE chunk: {e} — data: {data}");
-                continue;
+                return Ok(());
             }
         };
 
@@ -93,12 +92,12 @@ pub async fn parse_sse_stream(
                 }
             }
         }
-    }
+        Ok(())
+    })
+    .await?;
 
-    let assembled_tool_calls: Vec<ToolCall> = tool_calls
-        .into_iter()
-        .filter_map(|b| b.build())
-        .collect();
+    let assembled_tool_calls: Vec<ToolCall> =
+        tool_calls.into_iter().filter_map(|b| b.build()).collect();
 
     let response = ChatResponse {
         content: if content.is_empty() {
@@ -134,4 +133,49 @@ impl ToolCallBuilder {
             },
         })
     }
+}
+
+pub(crate) async fn for_each_sse_line<F>(response: Response, mut on_line: F) -> anyhow::Result<()>
+where
+    F: FnMut(&str) -> anyhow::Result<()>,
+{
+    let mut stream = response.bytes_stream();
+    let mut buffer = Vec::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        buffer.extend_from_slice(&chunk);
+
+        while let Some(newline_idx) = buffer.iter().position(|&byte| byte == b'\n') {
+            let line = drain_line(&mut buffer, newline_idx);
+            on_line(&line)?;
+        }
+    }
+
+    if !buffer.is_empty() {
+        let line = normalize_line_bytes(&buffer);
+        if !line.is_empty() {
+            on_line(&line)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn drain_line(buffer: &mut Vec<u8>, newline_idx: usize) -> String {
+    let line_bytes: Vec<u8> = buffer.drain(..=newline_idx).collect();
+    normalize_line_bytes(&line_bytes)
+}
+
+fn normalize_line_bytes(bytes: &[u8]) -> String {
+    let mut end = bytes.len();
+
+    if end > 0 && bytes[end - 1] == b'\n' {
+        end -= 1;
+    }
+    if end > 0 && bytes[end - 1] == b'\r' {
+        end -= 1;
+    }
+
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
 }

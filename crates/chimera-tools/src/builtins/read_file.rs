@@ -15,9 +15,21 @@ pub fn run(input: ReadFileInput) -> anyhow::Result<String> {
     let lines: Vec<&str> = content.lines().collect();
     let total = lines.len();
 
-    let start = input.offset.unwrap_or(1).saturating_sub(1);
+    let requested_offset = input.offset.unwrap_or(1);
+    let start = requested_offset.saturating_sub(1).min(total);
     let limit = input.limit.unwrap_or(2000);
-    let end = (start + limit).min(total);
+    let end = start.saturating_add(limit).min(total);
+
+    if start >= total {
+        return Ok(if total == 0 {
+            format!("{} is empty\n", input.file_path)
+        } else {
+            format!(
+                "Offset {requested_offset} is past end of file ({} total lines)\n",
+                total
+            )
+        });
+    }
 
     let mut result = String::new();
     for (i, line) in lines[start..end].iter().enumerate() {
@@ -86,5 +98,22 @@ mod tests {
 
         let result = run(input);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_file_offset_past_end_is_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "a\nb\n").unwrap();
+
+        let input = ReadFileInput {
+            file_path: path.display().to_string(),
+            offset: Some(99),
+            limit: None,
+        };
+
+        let result = run(input).unwrap();
+        assert!(result.contains("past end of file"));
+        assert!(result.contains("2 total lines"));
     }
 }

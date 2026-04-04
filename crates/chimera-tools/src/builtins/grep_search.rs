@@ -25,7 +25,14 @@ pub fn run(input: GrepSearchInput) -> anyhow::Result<String> {
         search_file(path, &re, context, &mut results)?;
         files_searched = 1;
     } else if path.is_dir() {
-        walk_dir(path, &re, context, &input.include, &mut results, &mut files_searched)?;
+        walk_dir(
+            path,
+            &re,
+            context,
+            &input.include,
+            &mut results,
+            &mut files_searched,
+        )?;
     } else {
         anyhow::bail!("Path does not exist: {search_path}");
     }
@@ -38,7 +45,10 @@ pub fn run(input: GrepSearchInput) -> anyhow::Result<String> {
     }
 
     let total_matches: usize = results.iter().map(|r: &FileMatch| r.matches.len()).sum();
-    let mut output = format!("{total_matches} match(es) across {} file(s):\n\n", results.len());
+    let mut output = format!(
+        "{total_matches} match(es) across {} file(s):\n\n",
+        results.len()
+    );
 
     for file_match in &results {
         output.push_str(&format!("{}:\n", file_match.path));
@@ -250,9 +260,9 @@ mod tests {
         };
 
         let result = run(input).unwrap();
-        assert!(result.contains("line 2"));   // context before
+        assert!(result.contains("line 2")); // context before
         assert!(result.contains("MATCH here")); // match
-        assert!(result.contains("line 4"));   // context after
+        assert!(result.contains("line 4")); // context after
         // line 1 and line 5 should NOT be present (only 1 line of context)
         assert!(!result.contains("line 1"));
         assert!(!result.contains("line 5"));

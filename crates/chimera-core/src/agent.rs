@@ -1,29 +1,96 @@
-use crate::config::Config;
+use crate::config::{ApprovalMode, Config};
 use crate::session::Session;
-use chimera_providers::types::*;
-use chimera_providers::Provider;
-use chimera_tools::{ToolRegistry, execute_tool};
+use chimera_sigil_providers::Provider;
+use chimera_sigil_providers::types::*;
+use chimera_sigil_tools::{PermissionLevel, ToolRegistry, execute_tool, resolve_alias};
+use serde::Serialize;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
+
+/// Decision returned by the approval callback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalDecision {
+    /// Allow this specific tool call.
+    Allow,
+    /// Allow all tool calls for the rest of the session.
+    AllowAll,
+    /// Deny this tool call.
+    Deny,
+}
+
+/// Callback for interactive tool approval prompts.
+/// Receives tool name, arguments JSON, and permission level.
+pub type ApprovalCallback =
+    Box<dyn Fn(&str, &str, PermissionLevel) -> ApprovalDecision + Send + Sync>;
 
 /// Callback for streaming events to the UI layer.
 pub type EventCallback = Box<dyn Fn(AgentEvent) + Send>;
 
 /// Events emitted by the agent during a turn.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
+    /// The current session identifier.
+    SessionReady { session_id: String },
     /// Streaming text content from the model.
-    TextDelta(String),
+    TextDelta { text: String },
     /// A tool is about to be called.
-    ToolStart { name: String, arguments: String },
+    ToolStart {
+        tool_call_id: String,
+        name: String,
+        arguments: String,
+    },
     /// A tool finished executing.
-    ToolResult { name: String, result: String, is_error: bool },
+    ToolResult {
+        tool_call_id: String,
+        name: String,
+        result: String,
+        is_error: bool,
+    },
+    /// A tool was denied by the user.
+    ToolDenied {
+        tool_call_id: String,
+        name: String,
+        reason: String,
+    },
     /// The turn is complete.
-    TurnComplete { text: Option<String>, iterations: usize },
+    TurnComplete {
+        text: Option<String>,
+        iterations: usize,
+        session_id: String,
+    },
+    /// The session was saved to disk.
+    SessionSaved { session_id: String, path: String },
     /// Token usage for this turn.
-    Usage { input_tokens: u32, output_tokens: u32 },
+    Usage {
+        input_tokens: u32,
+        output_tokens: u32,
+    },
     /// An error occurred.
-    Error(String),
+    Error { message: String },
+}
+
+/// Outcome of a completed agent turn.
+#[derive(Debug, Clone, Serialize)]
+pub struct TurnOutcome {
+    /// Final text response from the model, if any.
+    pub text: Option<String>,
+    /// How the turn ended.
+    pub exit_reason: ExitReason,
+}
+
+/// Why an agent turn ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExitReason {
+    /// Model produced a final text response.
+    Complete,
+    /// Hit the maximum iteration limit.
+    MaxIterations,
+    /// Stream ended unexpectedly.
+    StreamError,
+    /// A tool execution failed.
+    ToolError,
 }
 
 /// The core agent that drives the model-tool interaction loop.
@@ -33,15 +100,21 @@ pub struct Agent {
     config: Config,
     session: Session,
     tool_registry: ToolRegistry,
+    approval_callback: Option<ApprovalCallback>,
+    session_approved: bool,
+}
+
+fn approval_denial_reason(mode: ApprovalMode) -> &'static str {
+    match mode {
+        ApprovalMode::Prompt => "Tool execution denied by user.",
+        ApprovalMode::Approve => "Tool execution denied by approval mode 'approve'.",
+        ApprovalMode::Full => "Tool execution denied.",
+    }
 }
 
 impl Agent {
     /// Create a new agent with the given provider and config.
-    pub fn new(
-        provider: Box<dyn Provider>,
-        model: String,
-        config: Config,
-    ) -> Self {
+    pub fn new(provider: Box<dyn Provider>, model: String, config: Config) -> Self {
         let mut session = Session::new();
         session.set_system_prompt(&config.system_prompt());
 
@@ -51,12 +124,24 @@ impl Agent {
             config,
             session,
             tool_registry: ToolRegistry::with_builtins(),
+            approval_callback: None,
+            session_approved: false,
         }
+    }
+
+    /// Set the interactive approval callback for tool permission checks.
+    pub fn set_approval_callback(&mut self, callback: ApprovalCallback) {
+        self.approval_callback = Some(callback);
     }
 
     /// Get a reference to the session.
     pub fn session(&self) -> &Session {
         &self.session
+    }
+
+    /// Get a mutable reference to the session.
+    pub fn session_mut(&mut self) -> &mut Session {
+        &mut self.session
     }
 
     /// Run a single turn: take user input, call the model, execute tools in a
@@ -69,22 +154,30 @@ impl Agent {
         &mut self,
         user_input: &str,
         on_event: &EventCallback,
-    ) -> anyhow::Result<Option<String>> {
+    ) -> anyhow::Result<TurnOutcome> {
         self.session.push_user(user_input);
 
         let tool_definitions = self.tool_registry.definitions();
 
         let mut iterations = 0;
         let mut final_text: Option<String> = None;
+        let mut exit_reason = ExitReason::Complete;
+        let mut had_tool_error = false;
 
         loop {
             iterations += 1;
             if iterations > self.config.max_iterations {
-                warn!("Hit max iterations ({}) — forcing stop", self.config.max_iterations);
-                on_event(AgentEvent::Error(format!(
-                    "Reached maximum tool iterations ({}). Stopping.",
+                warn!(
+                    "Hit max iterations ({}) — forcing stop",
                     self.config.max_iterations
-                )));
+                );
+                on_event(AgentEvent::Error {
+                    message: format!(
+                        "Reached maximum tool iterations ({}). Stopping.",
+                        self.config.max_iterations
+                    ),
+                });
+                exit_reason = ExitReason::MaxIterations;
                 break;
             }
 
@@ -110,13 +203,15 @@ impl Agent {
             };
 
             // Stream the response
-            let (tx, mut rx) = mpsc::unbounded_channel::<chimera_providers::StreamEvent>();
+            let (tx, mut rx) = mpsc::unbounded_channel::<chimera_sigil_providers::StreamEvent>();
 
             let provider = &self.provider;
             let stream_result = provider.chat_stream(request, tx).await;
 
             if let Err(e) = stream_result {
-                on_event(AgentEvent::Error(format!("Provider error: {e}")));
+                on_event(AgentEvent::Error {
+                    message: format!("Provider error: {e}"),
+                });
                 return Err(e);
             }
 
@@ -126,18 +221,18 @@ impl Agent {
 
             while let Some(event) = rx.recv().await {
                 match event {
-                    chimera_providers::StreamEvent::ContentDelta(text) => {
+                    chimera_sigil_providers::StreamEvent::ContentDelta(text) => {
                         response_text.push_str(&text);
-                        on_event(AgentEvent::TextDelta(text));
+                        on_event(AgentEvent::TextDelta { text });
                     }
-                    chimera_providers::StreamEvent::ToolCallDelta { .. } => {
+                    chimera_sigil_providers::StreamEvent::ToolCallDelta { .. } => {
                         // Tool call deltas are assembled internally
                     }
-                    chimera_providers::StreamEvent::Done(resp) => {
+                    chimera_sigil_providers::StreamEvent::Done(resp) => {
                         response = Some(resp);
                     }
-                    chimera_providers::StreamEvent::Error(e) => {
-                        on_event(AgentEvent::Error(e));
+                    chimera_sigil_providers::StreamEvent::Error(e) => {
+                        on_event(AgentEvent::Error { message: e });
                     }
                 }
             }
@@ -153,7 +248,8 @@ impl Agent {
                             &response_text[..response_text.len().min(100)]
                         )
                     };
-                    on_event(AgentEvent::Error(err_msg));
+                    on_event(AgentEvent::Error { message: err_msg });
+                    exit_reason = ExitReason::StreamError;
                     break;
                 }
             };
@@ -178,6 +274,7 @@ impl Agent {
                 on_event(AgentEvent::TurnComplete {
                     text: final_text.clone(),
                     iterations,
+                    session_id: self.session.id.clone(),
                 });
                 break;
             }
@@ -185,6 +282,20 @@ impl Agent {
             // Record the assistant message with tool calls
             self.session
                 .push_assistant_tool_calls(response.content.clone(), response.tool_calls.clone());
+
+            // Auto-compact if approaching context window limit (85% threshold)
+            let ctx_window = self.config.context_window();
+            let estimated = self.session.estimate_context_tokens();
+            let threshold = ctx_window * 85 / 100;
+            if estimated > threshold {
+                let keep = 20; // keep last 20 messages
+                let removed = self.session.compact(keep);
+                if removed > 0 {
+                    info!(
+                        "Context compaction: removed {removed} messages (est. {estimated}/{ctx_window} tokens)"
+                    );
+                }
+            }
 
             // Execute each tool call
             for tool_call in &response.tool_calls {
@@ -194,7 +305,52 @@ impl Agent {
                 info!("Tool call: {tool_name}");
                 debug!("Tool args: {tool_args}");
 
+                // Permission check before execution
+                let canonical = resolve_alias(tool_name);
+                let permission = self
+                    .tool_registry
+                    .get(canonical)
+                    .map(|spec| spec.permission)
+                    .unwrap_or(PermissionLevel::Execute);
+
+                let approved = if permission <= PermissionLevel::ReadOnly {
+                    true
+                } else if self.session_approved {
+                    true
+                } else {
+                    match self.config.approval_mode {
+                        ApprovalMode::Full => true,
+                        ApprovalMode::Approve => permission <= PermissionLevel::WorkspaceWrite,
+                        ApprovalMode::Prompt => {
+                            if let Some(cb) = &self.approval_callback {
+                                match cb(tool_name, tool_args, permission) {
+                                    ApprovalDecision::Allow => true,
+                                    ApprovalDecision::AllowAll => {
+                                        self.session_approved = true;
+                                        true
+                                    }
+                                    ApprovalDecision::Deny => false,
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                    }
+                };
+
+                if !approved {
+                    let reason = approval_denial_reason(self.config.approval_mode).to_string();
+                    on_event(AgentEvent::ToolDenied {
+                        tool_call_id: tool_call.id.clone(),
+                        name: tool_name.clone(),
+                        reason: reason.clone(),
+                    });
+                    self.session.push_tool_result(&tool_call.id, &reason);
+                    continue;
+                }
+
                 on_event(AgentEvent::ToolStart {
+                    tool_call_id: tool_call.id.clone(),
                     name: tool_name.clone(),
                     arguments: tool_args.clone(),
                 });
@@ -203,10 +359,18 @@ impl Agent {
 
                 let (output, is_error) = match result {
                     Ok(output) => (output, false),
-                    Err(e) => (format!("Error: {e}"), true),
+                    Err(e) => {
+                        had_tool_error = true;
+                        (format!("Error: {e}"), true)
+                    }
                 };
 
+                if is_error {
+                    debug!("Tool '{tool_name}' failed");
+                }
+
                 on_event(AgentEvent::ToolResult {
+                    tool_call_id: tool_call.id.clone(),
                     name: tool_name.clone(),
                     result: output.clone(),
                     is_error,
@@ -219,6 +383,197 @@ impl Agent {
             debug!("Tool execution complete, continuing agent loop (iteration {iterations})");
         }
 
-        Ok(final_text)
+        if exit_reason == ExitReason::Complete && had_tool_error {
+            exit_reason = ExitReason::ToolError;
+        }
+
+        Ok(TurnOutcome {
+            text: final_text,
+            exit_reason,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use chimera_sigil_providers::types::{FunctionCall, ToolCall};
+    use chimera_sigil_providers::{Provider, ProviderKind};
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct MockProvider {
+        responses: Arc<Mutex<VecDeque<ChatResponse>>>,
+        requests: Arc<Mutex<Vec<ChatRequest>>>,
+    }
+
+    impl MockProvider {
+        fn new(responses: Vec<ChatResponse>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(responses.into())),
+                requests: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn requests(&self) -> Vec<ChatRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Provider for MockProvider {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::OpenAi
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+            tx: mpsc::UnboundedSender<chimera_sigil_providers::StreamEvent>,
+        ) -> anyhow::Result<()> {
+            self.requests.lock().unwrap().push(request);
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("mock response");
+            tx.send(chimera_sigil_providers::StreamEvent::Done(response))
+                .unwrap();
+            Ok(())
+        }
+
+        async fn chat(&self, _request: ChatRequest) -> anyhow::Result<ChatResponse> {
+            anyhow::bail!("chat() not used in agent tests")
+        }
+    }
+
+    fn tool_call(id: &str, name: &str, arguments: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn approve_mode_denies_execute_tools_without_prompting() {
+        let provider = MockProvider::new(vec![
+            ChatResponse {
+                content: None,
+                tool_calls: vec![tool_call("call_exec_1", "bash", r#"{"command":"echo hi"}"#)],
+                usage: None,
+                finish_reason: Some("tool_calls".into()),
+            },
+            ChatResponse {
+                content: Some("done".into()),
+                tool_calls: Vec::new(),
+                usage: None,
+                finish_reason: Some("stop".into()),
+            },
+        ]);
+
+        let mut agent = Agent::new(
+            Box::new(provider.clone()),
+            "gpt-4o".into(),
+            Config {
+                approval_mode: ApprovalMode::Approve,
+                ..Config::default()
+            },
+        );
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_ref = events.clone();
+        let callback: EventCallback = Box::new(move |event| {
+            events_ref.lock().unwrap().push(event);
+        });
+
+        let outcome = agent.run_turn("run it", &callback).await.unwrap();
+        assert_eq!(outcome.exit_reason, ExitReason::Complete);
+
+        let recorded = events.lock().unwrap().clone();
+        assert!(recorded.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolDenied {
+                tool_call_id,
+                name,
+                reason
+            } if tool_call_id == "call_exec_1"
+                && name == "bash"
+                && reason.contains("approval mode 'approve'")
+        )));
+
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2);
+        let last_message = requests[1].messages.last().unwrap();
+        assert_eq!(last_message.role, Role::Tool);
+        assert_eq!(
+            last_message.content.as_deref(),
+            Some("Tool execution denied by approval mode 'approve'.")
+        );
+    }
+
+    #[tokio::test]
+    async fn emits_tool_call_ids_and_session_metadata() {
+        let provider = MockProvider::new(vec![
+            ChatResponse {
+                content: None,
+                tool_calls: vec![tool_call(
+                    "call_json_1",
+                    "structured_output",
+                    r#"{"status":"ok"}"#,
+                )],
+                usage: None,
+                finish_reason: Some("tool_calls".into()),
+            },
+            ChatResponse {
+                content: Some("done".into()),
+                tool_calls: Vec::new(),
+                usage: None,
+                finish_reason: Some("stop".into()),
+            },
+        ]);
+
+        let mut agent = Agent::new(Box::new(provider), "gpt-4o".into(), Config::default());
+        let session_id = agent.session().id.clone();
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_ref = events.clone();
+        let callback: EventCallback = Box::new(move |event| {
+            events_ref.lock().unwrap().push(event);
+        });
+
+        agent.run_turn("return json", &callback).await.unwrap();
+
+        let recorded = events.lock().unwrap().clone();
+        assert!(recorded.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolStart {
+                tool_call_id,
+                name,
+                ..
+            } if tool_call_id == "call_json_1" && name == "structured_output"
+        )));
+        assert!(recorded.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolResult {
+                tool_call_id,
+                name,
+                is_error,
+                ..
+            } if tool_call_id == "call_json_1" && name == "structured_output" && !is_error
+        )));
+        assert!(recorded.iter().any(|event| matches!(
+            event,
+            AgentEvent::TurnComplete {
+                session_id: complete_session_id,
+                ..
+            } if complete_session_id == &session_id
+        )));
     }
 }

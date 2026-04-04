@@ -1,17 +1,17 @@
-# Chimera — Multi-Model Agent Orchestrator
+# Chimera Sigil — Multi-Model Agent Harness
 
 ## What This Is
 
-Chimera is a Rust-based agent orchestration tool that unifies multiple AI providers
+Chimera Sigil is a Rust-based agent orchestration tool that unifies multiple AI providers
 (Grok/xAI, OpenAI, Anthropic, local models via Ollama) behind a single tool-calling
 agent loop. Inspired by patterns from OpenAI Codex CLI and claw-code-parity.
 
 ## Architecture
 
-- `chimera-providers` — Provider trait + implementations (Grok, OpenAI, Anthropic, Ollama)
-- `chimera-tools` — Tool registry, dispatch, and built-in tools (bash, file ops, search)
-- `chimera-core` — Agent loop, session management, configuration
-- `chimera-cli` — Interactive CLI binary
+- `crates/chimera-providers` (`chimera-sigil-providers`) — Provider trait + implementations (Grok, OpenAI, Anthropic, Ollama)
+- `crates/chimera-tools` (`chimera-sigil-tools`) — Tool registry, dispatch, and built-in tools (bash, file ops, search)
+- `crates/chimera-core` (`chimera-sigil-core`) — Agent loop, session management, configuration
+- `crates/chimera-cli` (`chimera-sigil-cli`) — Interactive CLI binary
 
 ## Working Rules
 

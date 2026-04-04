@@ -1,0 +1,51 @@
+{
+  "name": "chimera-sigil",
+  "version": "0.1.0",
+  "description": "Multi-model AI agent harness for the terminal",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "chimera": "bin/chimera.js"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "assets/chimera-cover.png",
+    "assets/chimera-cover.gif",
+    "bin/",
+    "scripts/"
+  ],
+  "scripts": {
+    "build:release": "cargo build --release -p chimera-sigil-cli",
+    "dist:npm": "npm run build:release && node scripts/create-release-asset.mjs",
+    "release:doctor": "node scripts/release-local.mjs --doctor",
+    "release:local": "node scripts/release-local.mjs",
+    "postinstall": "node scripts/install.mjs"
+  },
+  "keywords": [
+    "ai",
+    "cli",
+    "terminal",
+    "agent",
+    "llm",
+    "rust"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sproutseeds/chimera-sigil.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sproutseeds/chimera-sigil/issues"
+  },
+  "homepage": "https://github.com/sproutseeds/chimera-sigil#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "preferGlobal": true,
+  "publishConfig": {
+    "provenance": true
+  },
+  "chimeraSigil": {
+    "releasesBaseUrl": "https://github.com/sproutseeds/chimera-sigil/releases/download"
+  }
+}

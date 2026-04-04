@@ -7,9 +7,8 @@ use tracing::{debug, warn};
 /// Resolves aliases (e.g., "read" → "read_file") before dispatch.
 pub async fn execute_tool(name: &str, arguments: &str) -> anyhow::Result<String> {
     let canonical = resolve_alias(name);
-    let input: Value = serde_json::from_str(arguments).map_err(|e| {
-        anyhow::anyhow!("Invalid tool arguments for '{canonical}': {e}")
-    })?;
+    let input: Value = serde_json::from_str(arguments)
+        .map_err(|e| anyhow::anyhow!("Invalid tool arguments for '{canonical}': {e}"))?;
 
     debug!("Executing tool '{canonical}' (requested as '{name}')");
 
@@ -45,7 +44,7 @@ pub async fn execute_tool(name: &str, arguments: &str) -> anyhow::Result<String>
         "structured_output" => builtins::structured_output::run(input),
         _ => {
             warn!("Unknown tool: {canonical}");
-            Ok(format!("Error: unknown tool '{canonical}'"))
+            anyhow::bail!("unknown tool '{canonical}'");
         }
     }
 }
