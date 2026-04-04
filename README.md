@@ -1,7 +1,7 @@
 # Chimera Sigil
 
 <p align="center">
-  <img src="assets/chimera-cover.gif" alt="Chimera Sigil animated cover" width="720" />
+  <img src="assets/chimera-cover.gif" alt="Chimera Sigil animated cover" width="560" />
 </p>
 
 <p align="center">
