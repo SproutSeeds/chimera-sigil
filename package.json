@@ -42,9 +42,6 @@
     "node": ">=18"
   },
   "preferGlobal": true,
-  "publishConfig": {
-    "provenance": true
-  },
   "chimeraSigil": {
     "releasesBaseUrl": "https://github.com/sproutseeds/chimera-sigil/releases/download"
   }
