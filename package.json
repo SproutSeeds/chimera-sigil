@@ -3,6 +3,10 @@
   "version": "0.1.2",
   "description": "Multi-model AI agent harness for the terminal",
   "license": "MIT",
+  "funding": {
+    "type": "individual",
+    "url": "https://frg.earth/support?utm_source=npm&utm_medium=funding&utm_campaign=public_work_support&package=chimera-sigil"
+  },
   "type": "module",
   "bin": {
     "chimera": "bin/chimera.js"

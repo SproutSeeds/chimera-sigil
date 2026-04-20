@@ -162,3 +162,7 @@ Local-first release tooling currently supports:
 - `x86_64-unknown-linux-gnu`
 
 For contributor setup and release workflow details, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Support
+
+Everything here is released for public use. If Chimera saved you time or you want to keep the work moving, you can [support public FRG releases](https://frg.earth/support?utm_source=readme&utm_medium=repo&utm_campaign=public_work_support&package=chimera-sigil).
