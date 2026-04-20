@@ -1,4 +1,5 @@
 use crate::types::*;
+use crate::{DEFAULT_OLLAMA_BASE_URL, normalize_ollama_openai_base_url};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
@@ -40,7 +41,8 @@ impl ProviderConfig {
             ProviderKind::Ollama => {
                 return Ok(Self {
                     base_url: std::env::var("OLLAMA_BASE_URL")
-                        .unwrap_or_else(|_| "http://localhost:11434/v1".into()),
+                        .map(|url| normalize_ollama_openai_base_url(&url))
+                        .unwrap_or_else(|_| DEFAULT_OLLAMA_BASE_URL.into()),
                     api_key: "ollama".into(),
                     kind,
                 });

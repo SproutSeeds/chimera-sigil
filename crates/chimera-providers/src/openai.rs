@@ -2,6 +2,7 @@ use crate::provider::{Provider, ProviderConfig, ProviderKind};
 use crate::stream::parse_sse_stream;
 use crate::types::*;
 use async_trait::async_trait;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -13,12 +14,18 @@ pub struct OpenAiProvider {
 
 impl OpenAiProvider {
     pub fn new(config: ProviderConfig) -> Self {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self { config, client }
     }
 
     fn endpoint(&self) -> String {
-        format!("{}/chat/completions", self.config.base_url)
+        format!(
+            "{}/chat/completions",
+            self.config.base_url.trim_end_matches('/')
+        )
     }
 }
 
@@ -44,13 +51,15 @@ impl Provider for OpenAiProvider {
             .bearer_auth(&self.config.api_key)
             .json(&req)
             .send()
-            .await?;
+            .await
+            .map_err(|e| self.request_error(&req.model, e))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            let _ = tx.send(StreamEvent::Error(format!("API error {status}: {body}")));
-            anyhow::bail!("API error {status}: {body}");
+            let message = self.status_error_message(&req.model, status, &body);
+            let _ = tx.send(StreamEvent::Error(message.clone()));
+            anyhow::bail!(message);
         }
 
         parse_sse_stream(response, tx).await?;
@@ -67,12 +76,13 @@ impl Provider for OpenAiProvider {
             .bearer_auth(&self.config.api_key)
             .json(&req)
             .send()
-            .await?;
+            .await
+            .map_err(|e| self.request_error(&req.model, e))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("API error {status}: {body}");
+            anyhow::bail!(self.status_error_message(&req.model, status, &body));
         }
 
         let body: serde_json::Value = response.json().await?;
@@ -106,4 +116,89 @@ impl Provider for OpenAiProvider {
             finish_reason,
         })
     }
+}
+
+impl OpenAiProvider {
+    fn request_error(&self, model: &str, error: reqwest::Error) -> anyhow::Error {
+        if self.config.kind == ProviderKind::Ollama {
+            return anyhow::anyhow!(
+                "{}",
+                ollama_request_error_message(&self.config.base_url, model, &error)
+            );
+        }
+
+        anyhow::anyhow!(
+            "{} request to {} failed: {}",
+            self.config.kind,
+            self.config.base_url,
+            error
+        )
+    }
+
+    fn status_error_message(&self, model: &str, status: reqwest::StatusCode, body: &str) -> String {
+        if self.config.kind == ProviderKind::Ollama {
+            return ollama_status_error_message(&self.config.base_url, model, status, body);
+        }
+
+        let body = compact_body(body);
+        format!("{} API error {status}: {body}", self.config.kind)
+    }
+}
+
+fn ollama_request_error_message(base_url: &str, model: &str, error: &reqwest::Error) -> String {
+    let mut message =
+        format!("Ollama is not reachable at {base_url} for model '{model}': {error}.");
+
+    if is_tailnet_url(base_url) {
+        message.push_str(
+            " This is a private tailnet route; confirm Tailscale is connected, the Umbra host is reachable, and Ollama is listening on port 11434.",
+        );
+    } else {
+        message.push_str(
+            " Start Ollama with `ollama serve`, or set OLLAMA_BASE_URL to the reachable /v1 endpoint.",
+        );
+    }
+
+    message
+}
+
+fn ollama_status_error_message(
+    base_url: &str,
+    model: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> String {
+    let body = compact_body(body);
+    let lower = body.to_ascii_lowercase();
+
+    if status == reqwest::StatusCode::NOT_FOUND
+        || (lower.contains("model") && lower.contains("not found"))
+    {
+        let mut message = format!(
+            "Ollama model '{model}' is not available at {base_url}. Pull it on that Ollama host with `ollama pull {model}`."
+        );
+        if is_tailnet_url(base_url) {
+            message.push_str(
+                " Because this is a tailnet workstation route, run the pull on Umbra or SSH into that host first.",
+            );
+        }
+        return message;
+    }
+
+    format!("Ollama API error {status} at {base_url} for model '{model}': {body}")
+}
+
+fn compact_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.len() <= 1_000 {
+        return trimmed.to_string();
+    }
+
+    let mut compacted = trimmed[..1_000].to_string();
+    compacted.push_str("... (truncated)");
+    compacted
+}
+
+fn is_tailnet_url(url: &str) -> bool {
+    url.contains(".ts.net") || url.contains("tailscale") || url.contains("tailnet")
 }

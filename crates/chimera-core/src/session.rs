@@ -2,6 +2,7 @@ use chimera_sigil_providers::types::{Message, Role};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::{fs, io::Write};
 use uuid::Uuid;
 
 const APP_DIR_NAME: &str = ".chimera-sigil";
@@ -43,6 +44,11 @@ impl Session {
     /// Primary directory for session files: ~/.chimera-sigil/sessions/
     pub fn sessions_dir() -> PathBuf {
         Self::app_dir(APP_DIR_NAME).join("sessions")
+    }
+
+    /// Primary application directory: ~/.chimera-sigil/
+    pub fn app_dir_path() -> PathBuf {
+        Self::app_dir(APP_DIR_NAME)
     }
 
     /// Legacy session directories kept for backward-compatible loading.
@@ -87,6 +93,15 @@ impl Session {
 
     /// Save to a specific path.
     pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                anyhow::anyhow!(
+                    "Could not create session directory {}: {e}",
+                    parent.display()
+                )
+            })?;
+        }
+
         let mut lines = Vec::with_capacity(self.messages.len() + 1);
 
         let header = SessionHeader {
@@ -101,27 +116,78 @@ impl Session {
             lines.push(serde_json::to_string(msg)?);
         }
 
-        std::fs::write(path, lines.join("\n") + "\n")?;
+        let content = lines.join("\n") + "\n";
+        let tmp_path = session_tmp_path(path);
+
+        {
+            let mut file = fs::File::create(&tmp_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Could not create temporary session file {}: {e}",
+                    tmp_path.display()
+                )
+            })?;
+            file.write_all(content.as_bytes()).map_err(|e| {
+                anyhow::anyhow!(
+                    "Could not write temporary session file {}: {e}",
+                    tmp_path.display()
+                )
+            })?;
+            file.sync_all().map_err(|e| {
+                anyhow::anyhow!(
+                    "Could not flush temporary session file {}: {e}",
+                    tmp_path.display()
+                )
+            })?;
+        }
+
+        fs::rename(&tmp_path, path).map_err(|e| {
+            anyhow::anyhow!(
+                "Could not move temporary session file {} into place at {}: {e}",
+                tmp_path.display(),
+                path.display()
+            )
+        })?;
         Ok(())
     }
 
     /// Load a session from a JSONL file.
     pub fn load_from(path: &Path) -> anyhow::Result<Self> {
-        let content = std::fs::read_to_string(path)?;
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Could not read session file {}: {e}", path.display()))?;
         let mut lines = content.lines();
 
         let header_line = lines
             .next()
-            .ok_or_else(|| anyhow::anyhow!("Empty session file"))?;
-        let header: SessionHeader = serde_json::from_str(header_line)?;
+            .ok_or_else(|| anyhow::anyhow!("Session file {} is empty", path.display()))?;
+        let header: SessionHeader = serde_json::from_str(header_line).map_err(|e| {
+            anyhow::anyhow!(
+                "Session file {} has an invalid header on line 1: {e}",
+                path.display()
+            )
+        })?;
 
         let mut messages = Vec::with_capacity(header.message_count);
-        for line in lines {
+        for (idx, line) in lines.enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
-            let msg: Message = serde_json::from_str(line)?;
+            let msg: Message = serde_json::from_str(line).map_err(|e| {
+                anyhow::anyhow!(
+                    "Session file {} has invalid JSON on line {}: {e}",
+                    path.display(),
+                    idx + 2
+                )
+            })?;
             messages.push(msg);
+        }
+
+        if messages.len() != header.message_count {
+            anyhow::bail!(
+                "Session file {} is incomplete: header says {} messages, found {}",
+                path.display(),
+                header.message_count,
+                messages.len()
+            );
         }
 
         Ok(Self {
@@ -134,6 +200,11 @@ impl Session {
 
     /// Load a session by ID from the default sessions directory.
     pub fn load(id: &str) -> anyhow::Result<Self> {
+        let candidate_path = Path::new(id);
+        if candidate_path.exists() {
+            return Self::load_from(candidate_path);
+        }
+
         for dir in Self::session_lookup_dirs() {
             let path = dir.join(format!("{id}.jsonl"));
             if path.exists() {
@@ -142,7 +213,7 @@ impl Session {
         }
 
         anyhow::bail!(
-            "Session file not found in any known session directory: {}",
+            "Session '{id}' was not found in any known session directory: {}",
             Self::format_lookup_dirs()
         );
     }
@@ -157,7 +228,9 @@ impl Session {
                 continue;
             }
 
-            for entry in std::fs::read_dir(&dir)? {
+            for entry in std::fs::read_dir(&dir).map_err(|e| {
+                anyhow::anyhow!("Could not read session directory {}: {e}", dir.display())
+            })? {
                 let entry = entry?;
                 let path = entry.path();
                 if path.extension().is_some_and(|e| e == "jsonl")
@@ -358,6 +431,18 @@ impl Session {
 
         adjusted
     }
+}
+
+fn session_tmp_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("session.jsonl");
+    path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        Uuid::new_v4()
+    ))
 }
 
 impl Default for Session {

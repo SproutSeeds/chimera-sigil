@@ -16,7 +16,7 @@ pub enum ApprovalMode {
 /// Agent configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Model to use (e.g., "grok-3", "gpt-4o", "llama3.2:latest").
+    /// Model to use (e.g., "local", "qwen3:4b", "gpt-4o").
     pub model: String,
     /// Maximum tool-calling iterations per turn before forcing a response.
     pub max_iterations: usize,
@@ -28,17 +28,23 @@ pub struct Config {
     pub system_prompt: Option<String>,
     /// How tool approvals are handled.
     pub approval_mode: ApprovalMode,
+    /// Provider retries after the initial request fails before any response is accepted.
+    pub provider_retries: usize,
+    /// Initial retry backoff for provider calls.
+    pub provider_retry_backoff_ms: u64,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            model: "grok-3".into(),
+            model: "qwen3:4b".into(),
             max_iterations: 25,
             temperature: None,
             max_tokens: None,
             system_prompt: None,
             approval_mode: ApprovalMode::Prompt,
+            provider_retries: 2,
+            provider_retry_backoff_ms: 750,
         }
     }
 }
@@ -53,6 +59,23 @@ impl Config {
 /// Default context window sizes per model family.
 pub fn context_window_for_model(model: &str) -> usize {
     match model {
+        // Local aliases / Ollama. These are conservative working budgets for
+        // laptop stability, not necessarily each model's published maximum.
+        "local" | "local-small" | "local-default" | "local-laptop" => 32_768,
+        "local-tiny" | "local-edge" | "local-coder-small" => 16_384,
+        "local-balanced" | "local-coder" | "local-code" => 32_768,
+        "local-12gb" | "local-16gb" | "local-heavy" => 32_768,
+        "local-coder-12gb" | "local-coder-16gb" | "local-coder-heavy" => 32_768,
+        "local-reasoning" | "local-workstation" | "local-gpu" => 32_768,
+        "local-24gb" | "local-4090" | "local-coder-24gb" | "local-coder-4090" => 16_384,
+        m if m.starts_with("qwen3:30b") => 16_384,
+        m if m.starts_with("qwen3") => 32_768,
+        m if m.starts_with("qwen2.5-coder:32b") => 16_384,
+        m if m.starts_with("qwen2.5-coder") => 32_768,
+        m if m.starts_with("llama3.2") => 16_384,
+        m if m.starts_with("gemma3n") => 16_384,
+        m if m.starts_with("deepseek-r1") => 32_768,
+        m if m.starts_with("phi4-mini") => 16_384,
         // Grok
         m if m.starts_with("grok") => 131_072,
         // OpenAI
@@ -106,6 +129,8 @@ Use them to accomplish the user's requests. Prefer using tools over asking the u
 - Use edit_file for targeted changes (exact string replacement).
 - Use write_file only for new files or complete rewrites.
 - Use structured_output to return data in a specific JSON format when requested.
+- If a tool fails, read the error and adjust the next action instead of repeating the same call blindly.
+- Respect approval denials. Treat denied tools as unavailable unless the user changes the approval mode.
 - Keep responses concise and action-oriented.
 - If a task is ambiguous, ask clarifying questions."#,
             os = std::env::consts::OS,
@@ -227,7 +252,7 @@ mod tests {
         assert!(prompt.contains("# Environment"));
         assert!(prompt.contains("# Tools"));
         assert!(prompt.contains("# Guidelines"));
-        assert!(prompt.contains("grok-3"));
+        assert!(prompt.contains("qwen3:4b"));
     }
 
     #[test]
@@ -304,12 +329,15 @@ mod tests {
         assert_eq!(context_window_for_model("gpt-4o"), 128_000);
         assert_eq!(context_window_for_model("claude-sonnet-4-6"), 200_000);
         assert_eq!(context_window_for_model("o3"), 200_000);
-        assert_eq!(context_window_for_model("llama3.2:latest"), 32_768);
+        assert_eq!(context_window_for_model("llama3.2:latest"), 16_384);
+        assert_eq!(context_window_for_model("qwen3:4b"), 32_768);
+        assert_eq!(context_window_for_model("local-workstation"), 32_768);
+        assert_eq!(context_window_for_model("local-coder-4090"), 16_384);
     }
 
     #[test]
     fn test_config_context_window() {
         let config = Config::default();
-        assert_eq!(config.context_window(), 131_072); // grok-3 default
+        assert_eq!(config.context_window(), 32_768); // qwen3:4b local default
     }
 }

@@ -4,6 +4,7 @@ use chimera_sigil_providers::Provider;
 use chimera_sigil_providers::types::*;
 use chimera_sigil_tools::{PermissionLevel, ToolRegistry, execute_tool, resolve_alias};
 use serde::Serialize;
+use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -65,6 +66,19 @@ pub enum AgentEvent {
     Usage {
         input_tokens: u32,
         output_tokens: u32,
+    },
+    /// Provider request failed and will be retried.
+    ProviderRetry {
+        attempt: usize,
+        max_attempts: usize,
+        delay_ms: u64,
+        error: String,
+    },
+    /// The session was compacted to keep the loop within context limits.
+    ContextCompacted {
+        removed_messages: usize,
+        estimated_tokens: usize,
+        context_window: usize,
     },
     /// An error occurred.
     Error { message: String },
@@ -202,18 +216,47 @@ impl Agent {
                 stream: true,
             };
 
-            // Stream the response
-            let (tx, mut rx) = mpsc::unbounded_channel::<chimera_sigil_providers::StreamEvent>();
+            // Stream the response, retrying provider setup/connect failures.
+            let max_attempts = self.config.provider_retries.saturating_add(1).max(1);
+            let mut rx = None;
+            let mut last_error = None;
 
-            let provider = &self.provider;
-            let stream_result = provider.chat_stream(request, tx).await;
-
-            if let Err(e) = stream_result {
-                on_event(AgentEvent::Error {
-                    message: format!("Provider error: {e}"),
-                });
-                return Err(e);
+            for attempt in 1..=max_attempts {
+                let (tx, attempt_rx) =
+                    mpsc::unbounded_channel::<chimera_sigil_providers::StreamEvent>();
+                match self.provider.chat_stream(request.clone(), tx).await {
+                    Ok(()) => {
+                        rx = Some(attempt_rx);
+                        last_error = None;
+                        break;
+                    }
+                    Err(e) => {
+                        let message = e.to_string();
+                        last_error = Some(e);
+                        if attempt < max_attempts {
+                            let delay_ms =
+                                retry_delay_ms(self.config.provider_retry_backoff_ms, attempt);
+                            on_event(AgentEvent::ProviderRetry {
+                                attempt,
+                                max_attempts,
+                                delay_ms,
+                                error: message,
+                            });
+                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        }
+                    }
+                }
             }
+
+            let Some(mut rx) = rx else {
+                let error = last_error
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "provider failed without an error".into());
+                on_event(AgentEvent::Error {
+                    message: format!("Provider error after {max_attempts} attempt(s): {error}"),
+                });
+                anyhow::bail!("Provider error after {max_attempts} attempt(s): {error}");
+            };
 
             // Collect streaming events into a full response
             let mut response_text = String::new();
@@ -264,8 +307,19 @@ impl Agent {
                 });
             }
 
+            let mut tool_calls = response.tool_calls.clone();
+            let mut tool_call_content = response.content.clone();
+            if tool_calls.is_empty()
+                && let Some(content) = response.content.as_deref()
+                && let Some((assistant_content, parsed_tool_calls)) =
+                    extract_textual_tool_calls(content)
+            {
+                tool_calls = parsed_tool_calls;
+                tool_call_content = assistant_content;
+            }
+
             // If no tool calls, this is the final response
-            if response.tool_calls.is_empty() {
+            if tool_calls.is_empty() {
                 let text = response.content.clone();
                 if let Some(t) = &text {
                     self.session.push_assistant_text(t);
@@ -281,7 +335,7 @@ impl Agent {
 
             // Record the assistant message with tool calls
             self.session
-                .push_assistant_tool_calls(response.content.clone(), response.tool_calls.clone());
+                .push_assistant_tool_calls(tool_call_content, tool_calls.clone());
 
             // Auto-compact if approaching context window limit (85% threshold)
             let ctx_window = self.config.context_window();
@@ -294,11 +348,16 @@ impl Agent {
                     info!(
                         "Context compaction: removed {removed} messages (est. {estimated}/{ctx_window} tokens)"
                     );
+                    on_event(AgentEvent::ContextCompacted {
+                        removed_messages: removed,
+                        estimated_tokens: estimated,
+                        context_window: ctx_window,
+                    });
                 }
             }
 
             // Execute each tool call
-            for tool_call in &response.tool_calls {
+            for tool_call in &tool_calls {
                 let tool_name = &tool_call.function.name;
                 let tool_args = &tool_call.function.arguments;
 
@@ -394,6 +453,104 @@ impl Agent {
     }
 }
 
+fn retry_delay_ms(initial_backoff_ms: u64, attempt: usize) -> u64 {
+    let shift = attempt.saturating_sub(1).min(6) as u32;
+    initial_backoff_ms.saturating_mul(2u64.saturating_pow(shift))
+}
+
+fn extract_textual_tool_calls(content: &str) -> Option<(Option<String>, Vec<ToolCall>)> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(trimmed) {
+        let calls = parse_textual_tool_call_values(items)?;
+        return Some((None, calls));
+    }
+
+    let mut calls = Vec::new();
+    let mut text_lines = Vec::new();
+    for line in content.lines() {
+        let trimmed_line = line.trim();
+        if trimmed_line.is_empty() {
+            if !text_lines.is_empty() {
+                text_lines.push(String::new());
+            }
+            continue;
+        }
+
+        match serde_json::from_str::<Value>(trimmed_line)
+            .ok()
+            .and_then(parse_textual_tool_call_value)
+        {
+            Some(call) => calls.push(call.with_index(calls.len())),
+            None => text_lines.push(line.to_string()),
+        }
+    }
+
+    if calls.is_empty() {
+        return None;
+    }
+
+    let assistant_content = text_lines.join("\n").trim().to_string();
+    Some((
+        if assistant_content.is_empty() {
+            None
+        } else {
+            Some(assistant_content)
+        },
+        calls,
+    ))
+}
+
+fn parse_textual_tool_call_values(values: Vec<Value>) -> Option<Vec<ToolCall>> {
+    let mut calls = Vec::new();
+    for (index, value) in values.into_iter().enumerate() {
+        calls.push(parse_textual_tool_call_value(value)?.with_index(index));
+    }
+
+    if calls.is_empty() { None } else { Some(calls) }
+}
+
+fn parse_textual_tool_call_value(value: Value) -> Option<TextualToolCall> {
+    let Value::Object(mut object) = value else {
+        return None;
+    };
+
+    let Some(Value::String(name)) = object.remove("name") else {
+        return None;
+    };
+    let Some(arguments) = object.remove("arguments") else {
+        return None;
+    };
+
+    let arguments = match arguments {
+        Value::String(value) => value,
+        other => serde_json::to_string(&other).ok()?,
+    };
+
+    Some(TextualToolCall { name, arguments })
+}
+
+struct TextualToolCall {
+    name: String,
+    arguments: String,
+}
+
+impl TextualToolCall {
+    fn with_index(self, index: usize) -> ToolCall {
+        ToolCall {
+            id: format!("text_tool_call_{index}"),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: self.name,
+                arguments: self.arguments,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,6 +599,58 @@ mod tests {
                 .expect("mock response");
             tx.send(chimera_sigil_providers::StreamEvent::Done(response))
                 .unwrap();
+            Ok(())
+        }
+
+        async fn chat(&self, _request: ChatRequest) -> anyhow::Result<ChatResponse> {
+            anyhow::bail!("chat() not used in agent tests")
+        }
+    }
+
+    #[derive(Clone)]
+    struct FlakyProvider {
+        failures_remaining: Arc<Mutex<usize>>,
+        requests: Arc<Mutex<Vec<ChatRequest>>>,
+        response: ChatResponse,
+    }
+
+    impl FlakyProvider {
+        fn new(failures: usize, response: ChatResponse) -> Self {
+            Self {
+                failures_remaining: Arc::new(Mutex::new(failures)),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                response,
+            }
+        }
+
+        fn requests(&self) -> Vec<ChatRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Provider for FlakyProvider {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Ollama
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+            tx: mpsc::UnboundedSender<chimera_sigil_providers::StreamEvent>,
+        ) -> anyhow::Result<()> {
+            self.requests.lock().unwrap().push(request);
+            let mut failures = self.failures_remaining.lock().unwrap();
+            if *failures > 0 {
+                *failures -= 1;
+                anyhow::bail!("temporary provider outage");
+            }
+            drop(failures);
+
+            tx.send(chimera_sigil_providers::StreamEvent::Done(
+                self.response.clone(),
+            ))
+            .unwrap();
             Ok(())
         }
 
@@ -574,6 +783,143 @@ mod tests {
                 session_id: complete_session_id,
                 ..
             } if complete_session_id == &session_id
+        )));
+    }
+
+    #[tokio::test]
+    async fn executes_textual_json_tool_calls_from_local_models() {
+        let provider = MockProvider::new(vec![
+            ChatResponse {
+                content: Some(r#"{"name":"glob_search","arguments":{"pattern":"*.md"}}"#.into()),
+                tool_calls: Vec::new(),
+                usage: None,
+                finish_reason: Some("stop".into()),
+            },
+            ChatResponse {
+                content: Some("scout complete".into()),
+                tool_calls: Vec::new(),
+                usage: None,
+                finish_reason: Some("stop".into()),
+            },
+        ]);
+
+        let mut agent = Agent::new(
+            Box::new(provider.clone()),
+            "qwen2.5-coder:32b".into(),
+            Config::default(),
+        );
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_ref = events.clone();
+        let callback: EventCallback = Box::new(move |event| {
+            events_ref.lock().unwrap().push(event);
+        });
+
+        let outcome = agent.run_turn("inspect markdown", &callback).await.unwrap();
+
+        assert_eq!(outcome.text.as_deref(), Some("scout complete"));
+        assert_eq!(provider.requests().len(), 2);
+
+        let recorded = events.lock().unwrap().clone();
+        assert!(recorded.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolStart { name, .. } if name == "glob_search"
+        )));
+        assert!(recorded.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolResult {
+                name,
+                is_error,
+                ..
+            } if name == "glob_search" && !is_error
+        )));
+    }
+
+    #[tokio::test]
+    async fn executes_textual_json_tool_calls_mixed_with_planning_text() {
+        let provider = MockProvider::new(vec![
+            ChatResponse {
+                content: Some(
+                    "I'll inspect the docs first.\n\n\
+                     {\"name\":\"grep_search\",\"arguments\":{\"pattern\":\"Research Delegation\"}}"
+                        .into(),
+                ),
+                tool_calls: Vec::new(),
+                usage: None,
+                finish_reason: Some("stop".into()),
+            },
+            ChatResponse {
+                content: Some("mixed scout complete".into()),
+                tool_calls: Vec::new(),
+                usage: None,
+                finish_reason: Some("stop".into()),
+            },
+        ]);
+
+        let mut agent = Agent::new(
+            Box::new(provider.clone()),
+            "qwen2.5-coder:32b".into(),
+            Config::default(),
+        );
+
+        let callback: EventCallback = Box::new(|_| {});
+        let outcome = agent.run_turn("inspect docs", &callback).await.unwrap();
+
+        assert_eq!(outcome.text.as_deref(), Some("mixed scout complete"));
+        assert_eq!(provider.requests().len(), 2);
+        let requests = provider.requests();
+        let assistant_message = requests[1]
+            .messages
+            .iter()
+            .find(|message| message.role == Role::Assistant && message.tool_calls.is_some())
+            .unwrap();
+        assert_eq!(
+            assistant_message.content.as_deref(),
+            Some("I'll inspect the docs first.")
+        );
+    }
+
+    #[tokio::test]
+    async fn retries_provider_failures_before_failing_the_turn() {
+        let provider = FlakyProvider::new(
+            1,
+            ChatResponse {
+                content: Some("ok".into()),
+                tool_calls: Vec::new(),
+                usage: None,
+                finish_reason: Some("stop".into()),
+            },
+        );
+
+        let mut agent = Agent::new(
+            Box::new(provider.clone()),
+            "qwen3:4b".into(),
+            Config {
+                provider_retries: 1,
+                provider_retry_backoff_ms: 0,
+                ..Config::default()
+            },
+        );
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_ref = events.clone();
+        let callback: EventCallback = Box::new(move |event| {
+            events_ref.lock().unwrap().push(event);
+        });
+
+        let outcome = agent.run_turn("hello", &callback).await.unwrap();
+        assert_eq!(outcome.exit_reason, ExitReason::Complete);
+        assert_eq!(provider.requests().len(), 2);
+
+        let recorded = events.lock().unwrap().clone();
+        assert!(recorded.iter().any(|event| matches!(
+            event,
+            AgentEvent::ProviderRetry {
+                attempt: 1,
+                max_attempts: 2,
+                error,
+                ..
+            } if error.contains("temporary provider outage")
         )));
     }
 }

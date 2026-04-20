@@ -15,7 +15,7 @@ agent loop. Inspired by patterns from OpenAI Codex CLI and claw-code-parity.
 
 ## Working Rules
 
-- Grok (xAI) is the default provider. Design provider-agnostic, test with Grok first.
+- Local Ollama is the default provider path. Design provider-agnostic, but keep the first-run path free and local.
 - All providers use OpenAI-compatible chat completions wire format where possible.
 - Tool definitions use JSON Schema. Tools are registered declaratively.
 - The agent loop is synchronous per-turn: send request → stream response → execute tools → loop.

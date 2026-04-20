@@ -5,19 +5,19 @@
 </p>
 
 <p align="center">
-  Multi-model terminal harness for fast, local-first iteration.
+  Free local-first terminal agent for Ollama, local GPUs, and optional cloud models.
 </p>
 
-Chimera Sigil gives you one terminal workflow across Grok, OpenAI, Anthropic, and local Ollama models. It is built for short feedback loops, visible tool use, and fast experimentation without depending on CI spend for every release artifact.
+Chimera Sigil gives you one terminal workflow that starts with local Ollama models and can still reach Grok, OpenAI, or Anthropic when you explicitly choose them. It is built for short feedback loops, visible tool use, and fast experimentation without requiring API spend.
 
 ## Mission
 
-Ship a practical multi-model harness that feels fast enough for daily use, clear enough to inspect, and flexible enough to evolve quickly.
+Ship a practical local-first multi-model harness that lets people get real work done for free on the hardware they already have, then scales up to bigger local GPUs or paid APIs only when they choose that path.
 
 ## What It Does
 
 - Runs a terminal agent with built-in file, search, edit, and shell tools
-- Supports primary models, collaborator models, and fallback chains
+- Supports local model profiles, collaborator models, and fallback chains
 - Persists sessions so single-prompt runs can resume later
 - Supports approval modes for safer noninteractive automation
 - Builds release artifacts locally on macOS, Windows, and Linux/WSL
@@ -28,31 +28,83 @@ Install from npm:
 
 ```bash
 npm install -g chimera-sigil
+chimera --local-doctor
+ollama pull qwen3:4b
 chimera --help
 ```
+
+Install and start Ollama first if it is not already running.
 
 Run from source:
 
 ```bash
-cargo run -p chimera-sigil-cli -- --model grok-3
+cargo run -p chimera-sigil-cli
 ```
 
 Single prompt mode:
 
 ```bash
-cargo run -p chimera-sigil-cli -- --model sonnet --prompt "Summarize this codebase"
+cargo run -p chimera-sigil-cli -- --prompt "Summarize this codebase"
 ```
 
-Collaborative mode:
+Local coding profile:
 
 ```bash
-cargo run -p chimera-sigil-cli -- --model grok-3 --collab sonnet,gpt-4o
+cargo run -p chimera-sigil-cli -- --model local-coder --prompt "Find the risky parts of this patch"
+```
+
+Collaborative local mode:
+
+```bash
+cargo run -p chimera-sigil-cli -- --model local-small --collab local-tiny,local-coder
 ```
 
 Fallback mode:
 
 ```bash
-cargo run -p chimera-sigil-cli -- --model grok-3 --fallback gpt-4o,sonnet
+cargo run -p chimera-sigil-cli -- --model local-coder --fallback local-small,local-tiny
+```
+
+## Local Model Profiles
+
+The default CLI model is `local`, which resolves to `qwen3:4b` through Ollama. These aliases are intentionally conservative so a person with a newer budget laptop can start useful work without buying API credits.
+
+| Profile | Ollama model | Best fit |
+| --- | --- | --- |
+| `local-tiny` | `llama3.2:1b` | Lowest memory, quick notes, routing, simple edits |
+| `local-edge` | `gemma3n:e2b` | Everyday-device profile for laptops and small machines |
+| `local`, `local-small`, `local-laptop` | `qwen3:4b` | Default free laptop profile |
+| `local-coder-small` | `qwen2.5-coder:3b` | Lightweight coding assistant |
+| `local-coder`, `local-code` | `qwen2.5-coder:7b` | Better code review and edits on 16GB+ machines |
+| `local-balanced` | `qwen3:8b` | Stronger general work when memory allows |
+| `local-12gb`, `local-16gb`, `local-heavy` | `qwen3:14b` | Midrange NVIDIA GPUs and larger-memory laptops |
+| `local-coder-12gb`, `local-coder-16gb`, `local-coder-heavy` | `qwen2.5-coder:14b` | Midrange GPU coding profile |
+| `local-reasoning` | `deepseek-r1:8b` | Slower reasoning pass for hard problems |
+| `local-24gb`, `local-4090`, `local-workstation`, `local-gpu` | `qwen3:30b` | 24GB GPU generalist profile |
+| `local-coder-24gb`, `local-coder-4090`, `local-coder-gpu` | `qwen2.5-coder:32b` | 24GB GPU coding profile |
+
+Any Ollama model name also works directly:
+
+```bash
+chimera --model gemma3n
+chimera --model qwen3:8b
+chimera --model qwen2.5-coder:14b
+```
+
+For the full hardware matrix and benchmarking plan, see [docs/hardware-optimization-process.md](docs/hardware-optimization-process.md).
+
+Ask Chimera to recommend a local profile for the current machine:
+
+```bash
+chimera --local-doctor
+chimera --local-doctor --json
+```
+
+Benchmark local profiles with Ollama timing metrics:
+
+```bash
+chimera --local-benchmark
+chimera --local-benchmark --benchmark-models local-4090,local-coder-4090,local-coder-16gb
 ```
 
 ## Approval Modes
@@ -64,16 +116,16 @@ cargo run -p chimera-sigil-cli -- --model grok-3 --fallback gpt-4o,sonnet
 
 ## Environment
 
-Set whichever providers you want to use:
+Local Ollama needs no API key. Cloud providers are optional:
 
 ```bash
+export OLLAMA_BASE_URL=http://localhost:11434/v1
 export XAI_API_KEY=...
 export OPENAI_API_KEY=...
 export ANTHROPIC_API_KEY=...
-export OLLAMA_BASE_URL=http://localhost:11434/v1
 ```
 
-No provider keys are committed to this repository. Local machine and release credentials live outside the repo.
+No provider keys are committed to this repository. Local machine, Ollama, and release credentials live outside the repo.
 
 ## Fast Iteration
 
