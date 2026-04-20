@@ -32,6 +32,10 @@ pub struct Config {
     pub provider_retries: usize,
     /// Initial retry backoff for provider calls.
     pub provider_retry_backoff_ms: u64,
+    /// Require the final assistant response to contain report-shaped JSON.
+    pub require_report_json: bool,
+    /// Repair attempts to make when the final report JSON contract is missing.
+    pub report_repair_attempts: usize,
 }
 
 impl Default for Config {
@@ -45,6 +49,8 @@ impl Default for Config {
             approval_mode: ApprovalMode::Prompt,
             provider_retries: 2,
             provider_retry_backoff_ms: 750,
+            require_report_json: false,
+            report_repair_attempts: 1,
         }
     }
 }

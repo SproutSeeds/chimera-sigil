@@ -60,6 +60,14 @@ struct Cli {
     #[arg(long, default_value_t = 2)]
     provider_retries: usize,
 
+    /// Require the final response to include report-shaped JSON (`task` and `target`)
+    #[arg(long, default_value_t = false)]
+    require_report_json: bool,
+
+    /// Repair attempts when --require-report-json is enabled and the final response misses it
+    #[arg(long, default_value_t = 1)]
+    report_repair_attempts: usize,
+
     /// Do not save the session automatically after each completed turn
     #[arg(long, default_value_t = false)]
     no_auto_save: bool,
@@ -223,6 +231,8 @@ async fn run(cli: Cli) -> i32 {
         temperature: cli.temperature,
         approval_mode,
         provider_retries: cli.provider_retries,
+        require_report_json: cli.require_report_json,
+        report_repair_attempts: cli.report_repair_attempts,
         ..Config::default()
     };
 
@@ -594,6 +604,17 @@ fn make_callback() -> EventCallback {
                     "  [compacted {removed_messages} messages; estimated {estimated_tokens}/{context_window} tokens]"
                 )
                 .dimmed()
+            );
+        }
+        AgentEvent::ReportContractRepair {
+            attempt,
+            max_attempts,
+            reason,
+        } => {
+            eprintln!(
+                "{} {}",
+                "  repair>".yellow().bold(),
+                format!("report contract repair {attempt}/{max_attempts}: {reason}").dimmed()
             );
         }
         AgentEvent::ToolDenied {
